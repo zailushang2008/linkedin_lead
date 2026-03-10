@@ -14,8 +14,8 @@ docker compose up --build
 ```
 
 ## MVP flow to verify
-1. Open frontend: `http://localhost:3000/login` and submit form.
-2. Go to `http://localhost:3000/search`.
+1. Open frontend: `http://localhost:13000/login` and submit form.
+2. Go to `http://localhost:13000/search`.
 3. Input keywords and click **Run Search**.
 4. Frontend calls `POST /api/search/people`, polls `GET /api/jobs/{job_id}`, then loads `GET /api/search/results/{search_request_id}`.
 5. Click one result item; frontend calls `POST /api/profiles/fetch` and polls job.

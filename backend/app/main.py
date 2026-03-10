@@ -1,3 +1,6 @@
+import logging
+import uuid
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,9 +8,11 @@ from app.api.v1 import auth, search, jobs, profiles, api_keys, usage, search_res
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.base import Base
-from app.db.session import engine
+from app.db.models import User
+from app.db.session import SessionLocal, engine
 
 configure_logging(settings.log_level)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title='LinkedIn Lead MVP API', version='0.2.0')
 
@@ -19,10 +24,35 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
+DEMO_USER_ID = uuid.UUID('00000000-0000-0000-0000-000000000001')
+
+
+def seed_demo_user() -> None:
+    db = SessionLocal()
+    try:
+        existing = db.query(User).filter(User.id == DEMO_USER_ID).first()
+        if existing:
+            return
+
+        db.add(
+            User(
+                id=DEMO_USER_ID,
+                email='demo@linkedin-lead.local',
+                password_hash='demo_password_not_used_in_mvp',
+                role='user',
+                is_active=True,
+            )
+        )
+        db.commit()
+        logger.info('seeded demo user id=%s', DEMO_USER_ID)
+    finally:
+        db.close()
+
 
 @app.on_event('startup')
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    seed_demo_user()
 
 
 app.include_router(auth.router, prefix='/api')

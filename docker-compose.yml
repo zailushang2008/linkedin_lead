@@ -1,0 +1,60 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-linkedin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linkedin}
+      POSTGRES_DB: ${POSTGRES_DB:-linkedin_lead}
+    ports:
+      - '15432:5432'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '16379:6379'
+
+  backend:
+    build:
+      context: ./backend
+    env_file: .env.example
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - '18000:18000'
+    command: uvicorn app.main:app --host 0.0.0.0 --port 18000 --reload
+    volumes:
+      - ./backend:/app
+      - ./shared:/shared
+
+  worker:
+    build:
+      context: ./worker
+    env_file: .env.example
+    depends_on:
+      - redis
+      - postgres
+    command: celery -A app.celery_app.celery_app worker --loglevel=INFO
+    volumes:
+      - ./worker:/app
+      - ./shared:/shared
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    env_file: .env.example
+    depends_on:
+      - backend
+    ports:
+      - '13000:13000'
+    command: sh -c "npm install && npm run dev"
+    volumes:
+      - ./frontend:/app
+
+volumes:
+  pg_data:

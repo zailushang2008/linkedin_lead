@@ -18,6 +18,10 @@ from app.scraper.playwright_client import (
 logger = logging.getLogger(__name__)
 DEBUG_DIR = Path('/app/debug')
 
+SCREEN_SELECTOR = '[data-sdui-screen="com.linkedin.sdui.flagshipnav.search.SearchResultsPeople"]'
+LISTITEM_SELECTOR = '[role="listitem"]'
+PROFILE_LINK_SELECTOR = "a[href*='/in/']"
+
 
 def _people_search_url(keywords: str, page: int) -> str:
     encoded_keywords = quote_plus(keywords)
@@ -25,52 +29,54 @@ def _people_search_url(keywords: str, page: int) -> str:
 
 
 async def _first_text(locator: Locator) -> str | None:
-    count = await locator.count()
-    if count == 0:
+    if await locator.count() == 0:
         return None
     text = (await locator.first.inner_text()).strip()
     return text or None
 
 
-async def _extract_profile_urn(container: Locator) -> str | None:
+def _normalize_profile_url(href: str | None) -> str | None:
+    if not href:
+        return None
+    if href.startswith('http'):
+        return href.split('?')[0]
+    if href.startswith('/in/'):
+        return f'https://www.linkedin.com{href}'.split('?')[0]
+    return None
+
+
+async def _extract_profile_urn(item: Locator) -> str | None:
     for attr in ('data-chameleon-result-urn', 'data-urn', 'data-id'):
-        value = await container.get_attribute(attr)
+        value = await item.get_attribute(attr)
         if value:
             return value
     return None
 
 
-async def _extract_profile_url(container: Locator) -> str | None:
-    profile_link = container.locator("a[href*='/in/']")
-    count = await profile_link.count()
-    if count == 0:
+async def _extract_from_listitem(item: Locator) -> dict[str, Any] | None:
+    profile_link = item.locator(PROFILE_LINK_SELECTOR)
+    if await profile_link.count() == 0:
         return None
+
     href = await profile_link.first.get_attribute('href')
-    if not href:
-        return None
-    if href.startswith('http'):
-        return href.split('?')[0]
-    return f'https://www.linkedin.com{href}'.split('?')[0]
-
-
-async def _extract_person(container: Locator) -> dict[str, Any] | None:
-    profile_url = await _extract_profile_url(container)
+    profile_url = _normalize_profile_url(href)
     if not profile_url:
         return None
 
-    full_name = await _first_text(container.locator('span[aria-hidden="true"]'))
-    headline = await _first_text(container.locator('.entity-result__primary-subtitle'))
-    location = await _first_text(container.locator('.entity-result__secondary-subtitle'))
-    current_company = await _first_text(container.locator('.entity-result__summary'))
-    profile_urn = await _extract_profile_urn(container)
+    full_name = (await profile_link.first.inner_text()).strip() if await profile_link.first.count() else None
+
+    # strategy: extract from same listitem text blocks; missing fields are allowed
+    headline = await _first_text(item.locator('.t-14.t-black.t-normal, .entity-result__primary-subtitle'))
+    location = await _first_text(item.locator('.t-14.t-normal.t-black--light, .entity-result__secondary-subtitle'))
+    current_company = await _first_text(item.locator('.entity-result__summary, .t-14.t-normal'))
 
     return {
-        'full_name': full_name,
+        'full_name': full_name or None,
         'headline': headline,
         'location': location,
         'current_company': current_company,
         'profile_url': profile_url,
-        'profile_urn': profile_urn,
+        'profile_urn': await _extract_profile_urn(item),
     }
 
 
@@ -82,45 +88,26 @@ async def _save_debug_artifacts(page: Page, reason: str) -> tuple[str, str]:
 
     await page.screenshot(path=str(screenshot_path), full_page=True)
     html_path.write_text(await page.content(), encoding='utf-8')
-
-    logger.error(
-        'people_search debug saved reason=%s screenshot=%s html=%s',
-        reason,
-        screenshot_path,
-        html_path,
-    )
+    logger.error('people_search debug saved reason=%s screenshot=%s html=%s', reason, screenshot_path, html_path)
     return str(screenshot_path), str(html_path)
 
 
-async def _wait_results_or_raise(page: Page) -> Locator:
-    primary = page.locator('li.reusable-search__result-container')
+async def _get_people_listitems(page: Page) -> Locator:
+    area = page.locator(SCREEN_SELECTOR)
     await page.wait_for_timeout(1500)
-    if await primary.count() > 0:
-        return primary
 
-    fallback = page.locator('div.entity-result')
-    if await fallback.count() > 0:
-        return fallback
+    if await area.count() > 0:
+        return area.first.locator(LISTITEM_SELECTOR)
 
     page_title = await page.title()
     lower_url = page.url.lower()
-    lower_title = page_title.lower()
-
     if any(marker in lower_url for marker in ['linkedin.com/login', '/checkpoint/', '/challenge/']):
         await _save_debug_artifacts(page, 'login_or_challenge_redirect')
-        raise LoginRequiredError(
-            f'linkedin redirected to auth/challenge page. url={page.url} title={page_title}'
-        )
+        raise LoginRequiredError(f'linkedin redirected to auth/challenge page. url={page.url} title={page_title}')
 
-    if 'search/results/people' not in lower_url and 'search' not in lower_title:
-        await _save_debug_artifacts(page, 'unexpected_non_search_page')
-        raise SelectorMissingError(
-            f'current page does not look like people search page. url={page.url} title={page_title}'
-        )
-
-    await _save_debug_artifacts(page, 'result_containers_not_found')
+    await _save_debug_artifacts(page, 'search_people_area_not_found')
     raise SelectorMissingError(
-        f'unable to find people search result containers. url={page.url} title={page_title}'
+        f'cannot locate SearchResultsPeople area selector={SCREEN_SELECTOR}. url={page.url} title={page_title}'
     )
 
 
@@ -142,20 +129,48 @@ async def scrape_people_search(
         page_title = await page_obj.title()
         logger.info('people_search navigation final_url=%s page_url=%s title=%s', url, page_obj.url, page_title)
 
-        result_nodes = await _wait_results_or_raise(page_obj)
-        total = await result_nodes.count()
-        limited = min(total, 10)
+        listitems = await _get_people_listitems(page_obj)
+        total_listitems = await listitems.count()
 
         parsed: list[dict[str, Any]] = []
-        for idx in range(limited):
-            item = await _extract_person(result_nodes.nth(idx))
-            if item:
-                parsed.append(item)
+        skipped_non_profile = 0
+        skipped_upsell_or_noise = 0
 
-        if not parsed:
-            await _save_debug_artifacts(page_obj, 'containers_found_but_no_profiles_parsed')
+        for idx in range(total_listitems):
+            item = listitems.nth(idx)
+
+            # only keep list items with /in/ links
+            if await item.locator(PROFILE_LINK_SELECTOR).count() == 0:
+                skipped_non_profile += 1
+                continue
+
+            raw_text = ((await item.inner_text()) or '').strip()
+            lower_text = raw_text.lower()
+            if '领英会员' in raw_text or 'linkedin premium' in lower_text or '/search/results/' in lower_text:
+                skipped_upsell_or_noise += 1
+                continue
+
+            extracted = await _extract_from_listitem(item)
+            if extracted:
+                parsed.append(extracted)
+
+            if len(parsed) >= 10:
+                break
+
+        logger.info(
+            'people_search listitem_stats total=%s valid_profiles=%s skipped_non_profile=%s skipped_upsell_or_noise=%s',
+            total_listitems,
+            len(parsed),
+            skipped_non_profile,
+            skipped_upsell_or_noise,
+        )
+
+        if len(parsed) == 0:
+            await _save_debug_artifacts(page_obj, 'no_in_profile_links_found')
             raise SelectorMissingError(
-                f'people result containers found but no valid profile entries parsed. url={page_obj.url} title={page_title}'
+                f'no valid /in/ profile links found in SearchResultsPeople listitems. '
+                f'total_listitems={total_listitems} url={page_obj.url} title={page_title}'
             )
 
-        return parsed
+        # target at least first 5 valid profiles when available
+        return parsed[:10]

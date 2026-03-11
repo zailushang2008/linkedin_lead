@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, HttpUrl
 class PeopleSearchRequest(BaseModel):
     keywords: str = Field(min_length=1, max_length=255)
     page: int = Field(default=1, ge=1)
+    cookies_json: str | None = None
+    storage_state_path: str | None = None
 
 
 class SearchResultItemResponse(BaseModel):
@@ -20,3 +22,5 @@ class SearchResultItemResponse(BaseModel):
 
 class ProfileFetchRequest(BaseModel):
     profile_url: HttpUrl
+    cookies_json: str | None = None
+    storage_state_path: str | None = None

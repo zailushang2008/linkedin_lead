@@ -21,7 +21,13 @@ DEMO_USER_ID = uuid.UUID('00000000-0000-0000-0000-000000000001')
 @router.post('/search/people', response_model=JobCreateResponse)
 def create_people_search(payload: PeopleSearchRequest, db: Session = Depends(get_db)) -> JobCreateResponse:
     service = JobService(db)
-    job = service.create_people_search_job(user_id=DEMO_USER_ID, keywords=payload.keywords, page=payload.page)
+    job = service.create_people_search_job(
+        user_id=DEMO_USER_ID,
+        keywords=payload.keywords,
+        page=payload.page,
+        cookies_json=payload.cookies_json,
+        storage_state_path=payload.storage_state_path,
+    )
     celery_client.send_task('tasks.people_search.run', args=[str(job.id)])
     logger.info('queued people search job_id=%s keywords=%s page=%s', job.id, payload.keywords, payload.page)
     return JobCreateResponse(job_id=job.id, status=job.status.value, job_type=job.job_type.value)
@@ -47,7 +53,12 @@ def fetch_profile(payload: ProfileFetchRequest, db: Session = Depends(get_db)) -
             ),
         )
 
-    job = JobService(db).create_profile_fetch_job(user_id=DEMO_USER_ID, profile_url=str(payload.profile_url))
+    job = JobService(db).create_profile_fetch_job(
+        user_id=DEMO_USER_ID,
+        profile_url=str(payload.profile_url),
+        cookies_json=payload.cookies_json,
+        storage_state_path=payload.storage_state_path,
+    )
     celery_client.send_task('tasks.profile_fetch.run', args=[str(job.id)])
     logger.info('queued profile fetch job_id=%s url=%s', job.id, payload.profile_url)
     return ProfileFetchCachedResponse(cached=False, job_id=job.id, status=job.status.value)

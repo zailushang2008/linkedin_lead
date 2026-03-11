@@ -22,6 +22,9 @@ def get_search_results(search_request_id: uuid.UUID, db: Session = Depends(get_d
             full_name=item.full_name,
             headline=item.headline,
             location=item.location,
+            current_company=item.current_company,
+            profile_urn=item.profile_urn,
+            public_identifier=item.public_identifier,
         )
         for item in results
     ]

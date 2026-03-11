@@ -13,6 +13,13 @@ def test_normalize_profile_url_strips_query_and_keeps_slug() -> None:
     )
 
 
+def test_normalize_profile_url_accepts_dict_payloads() -> None:
+    assert (
+        normalize_profile_url({'url': 'https://www.linkedin.com/in/jane-doe-123/?trk=foo'})
+        == 'https://www.linkedin.com/in/jane-doe-123'
+    )
+
+
 def test_extract_people_from_voyager_payload() -> None:
     payload = {
         'included': [

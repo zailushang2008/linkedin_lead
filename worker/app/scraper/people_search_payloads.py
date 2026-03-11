@@ -32,7 +32,19 @@ def extract_text_value(value: Any) -> str | None:
     return None
 
 
-def normalize_profile_url(href: str | None) -> str | None:
+def _extract_url_candidate(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ('url', 'navigationUrl', 'entityUrl', 'targetUrl', 'profileUrl'):
+            candidate = _extract_url_candidate(value.get(key))
+            if candidate:
+                return candidate
+    return None
+
+
+def normalize_profile_url(href: Any) -> str | None:
+    href = _extract_url_candidate(href)
     if not href:
         return None
     if href.startswith('/in/'):
@@ -82,8 +94,7 @@ def extract_api_result(node: dict[str, Any]) -> dict[str, Any] | None:
 
     if not profile_url:
         template = node.get('navigationUrlTemplate')
-        if isinstance(template, str):
-            profile_url = normalize_profile_url(template)
+        profile_url = normalize_profile_url(template)
 
     if not profile_url:
         return None

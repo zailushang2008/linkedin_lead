@@ -17,7 +17,8 @@ docker compose up --build
 - Prefer `LINKEDIN_STORAGE_STATE_PATH` and point it to a local file outside the repo, for example `/root/.secrets/linkedin/storage_state.json`.
 - Use `LINKEDIN_COOKIES_JSON` only as a temporary override when you already have a clean cookie export.
 - Do not commit cookies or `storage_state.json` into this repository.
-- When both are present, the worker loads `storage_state_path` first and then overlays `cookies_json`.
+- Do not send `cookies_json` together with `storage_state_path`. The worker now prefers `storage_state_path` and ignores cookies when both are present to avoid LinkedIn redirect loops.
+- `POST /api/search/people` and `POST /api/profiles/fetch` both accept optional `storage_state_path` and `cookies_json`, and pass them through to the worker payload.
 
 ## People search output
 `POST /api/search/people` is intended to return a lead list close to Harvest `lead-search / LeadShort` for the fields below:
@@ -41,6 +42,11 @@ This is necessary because LinkedIn's current search page often renders subtitle 
 - The old scraper relied on legacy DOM selectors such as `.entity-result__primary-subtitle` and `.entity-result__secondary-subtitle`.
 - LinkedIn's current people search UI frequently serves those values through SDUI/Voyager payloads and `aria-hidden` text runs, so those selectors miss the real content.
 - `current_company`, `profile_urn`, and `public_identifier` were never exposed through the backend response schema or persisted columns, so even when partially discovered they were dropped.
+
+## Redirect loop diagnosis
+- If LinkedIn returns `ERR_TOO_MANY_REDIRECTS`, the most likely cause is an invalid or stale auth state.
+- Use a fresh `storage_state.json` captured from a working logged-in browser session.
+- Avoid mixing `storage_state_path` with `cookies_json`; the worker intentionally ignores cookies when both are present.
 
 ## Pagination
 - The API accepts `page >= 1`.
@@ -69,7 +75,7 @@ The worker uses PostgreSQL `ON CONFLICT ... DO UPDATE`, so reruns enrich the sam
 ```bash
 curl -sS -X POST http://localhost:18000/api/search/people \
   -H 'Content-Type: application/json' \
-  -d '{"keywords":"software engineer","page":1}'
+  -d '{"keywords":"software engineer","page":1,"storage_state_path":"/root/.secrets/linkedin/storage_state.json"}'
 ```
 2. Poll the returned job id:
 ```bash

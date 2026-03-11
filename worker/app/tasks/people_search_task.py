@@ -2,6 +2,8 @@ import asyncio
 import logging
 from datetime import datetime
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from app.celery_app import celery_app
 from app.db import SessionLocal
 from app.models import Job, JobStatus, SearchRequest, SearchResult
@@ -40,23 +42,43 @@ def run_people_search(job_id: str) -> dict:
         if not request:
             raise ValueError(f'search_request not found for job_id={job_id}')
 
-        for item in scraped:
-            db.add(
-                SearchResult(
-                    search_request_id=request.id,
-                    profile_url=item['profile_url'],
-                    full_name=item.get('full_name'),
-                    headline=item.get('headline'),
-                    location=item.get('location'),
-                    raw_json=item,
-                )
+        rows = [
+            {
+                'search_request_id': request.id,
+                'profile_url': item['profile_url'],
+                'full_name': item.get('full_name'),
+                'headline': item.get('headline'),
+                'location': item.get('location'),
+                'current_company': item.get('current_company'),
+                'profile_urn': item.get('profile_urn'),
+                'public_identifier': item.get('public_identifier'),
+                'raw_json': item,
+            }
+            for item in scraped
+            if item.get('profile_url')
+        ]
+
+        if rows:
+            insert_stmt = pg_insert(SearchResult.__table__).values(rows)
+            upsert_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=['search_request_id', 'profile_url'],
+                set_={
+                    'full_name': insert_stmt.excluded.full_name,
+                    'headline': insert_stmt.excluded.headline,
+                    'location': insert_stmt.excluded.location,
+                    'current_company': insert_stmt.excluded.current_company,
+                    'profile_urn': insert_stmt.excluded.profile_urn,
+                    'public_identifier': insert_stmt.excluded.public_identifier,
+                    'raw_json': insert_stmt.excluded.raw_json,
+                },
             )
+            db.execute(upsert_stmt)
 
         job.status = JobStatus.succeeded
         job.finished_at = datetime.utcnow()
         db.commit()
-        logger.info('people_search succeeded job_id=%s results=%s', job_id, len(scraped))
-        return {'job_id': job_id, 'status': 'succeeded', 'results_count': len(scraped)}
+        logger.info('people_search succeeded job_id=%s results=%s', job_id, len(rows))
+        return {'job_id': job_id, 'status': 'succeeded', 'results_count': len(rows)}
     except Exception as exc:
         logger.exception('people_search failed job_id=%s error=%s', job_id, exc)
         db.rollback()

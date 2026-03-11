@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Text, JSON, String
+from sqlalchemy import DateTime, Enum, JSON, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 
@@ -34,12 +34,16 @@ class SearchRequest(Base):
 
 class SearchResult(Base):
     __tablename__ = 'search_results'
+    __table_args__ = (UniqueConstraint('search_request_id', 'profile_url', name='uq_search_results_request_profile_url'),)
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     search_request_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     profile_url: Mapped[str] = mapped_column(Text)
     full_name: Mapped[str | None] = mapped_column(String(255))
     headline: Mapped[str | None] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(String(255))
+    current_company: Mapped[str | None] = mapped_column(String(255))
+    profile_urn: Mapped[str | None] = mapped_column(String(255))
+    public_identifier: Mapped[str | None] = mapped_column(String(255))
     raw_json: Mapped[dict] = mapped_column(JSON, default=dict)
     # Keep schema compatible with backend DB models: created_at is NOT NULL in Postgres
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

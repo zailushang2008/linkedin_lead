@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -6,6 +7,13 @@ from urllib.parse import quote_plus
 
 from playwright.async_api import Locator, Page
 
+from app.scraper.people_search_payloads import (
+    clean_text,
+    extract_people_from_response,
+    extract_public_identifier,
+    merge_people_results,
+    normalize_profile_url,
+)
 from app.scraper.playwright_client import (
     LoginRequiredError,
     ScraperError,
@@ -21,6 +29,7 @@ DEBUG_DIR = Path('/app/debug')
 SCREEN_SELECTOR = '[data-sdui-screen="com.linkedin.sdui.flagshipnav.search.SearchResultsPeople"]'
 LISTITEM_SELECTOR = '[role="listitem"]'
 PROFILE_LINK_SELECTOR = "a[href*='/in/']"
+VOYAGER_RESPONSE_MARKERS = ('/voyager/api/graphql', '/voyager/api/search')
 
 
 def _people_search_url(keywords: str, page: int) -> str:
@@ -33,16 +42,6 @@ async def _first_text(locator: Locator) -> str | None:
         return None
     text = (await locator.first.inner_text()).strip()
     return text or None
-
-
-def _normalize_profile_url(href: str | None) -> str | None:
-    if not href:
-        return None
-    if href.startswith('http'):
-        return href.split('?')[0]
-    if href.startswith('/in/'):
-        return f'https://www.linkedin.com{href}'.split('?')[0]
-    return None
 
 
 async def _extract_profile_urn(item: Locator) -> str | None:
@@ -59,16 +58,27 @@ async def _extract_from_listitem(item: Locator) -> dict[str, Any] | None:
         return None
 
     href = await profile_link.first.get_attribute('href')
-    profile_url = _normalize_profile_url(href)
+    profile_url = normalize_profile_url(href)
     if not profile_url:
         return None
 
     full_name = (await profile_link.first.inner_text()).strip() if await profile_link.first.count() else None
 
-    # strategy: extract from same listitem text blocks; missing fields are allowed
-    headline = await _first_text(item.locator('.t-14.t-black.t-normal, .entity-result__primary-subtitle'))
-    location = await _first_text(item.locator('.t-14.t-normal.t-black--light, .entity-result__secondary-subtitle'))
-    current_company = await _first_text(item.locator('.entity-result__summary, .t-14.t-normal'))
+    aria_hidden_text = item.locator("span[aria-hidden='true']")
+    text_chunks: list[str] = []
+    for idx in range(min(await aria_hidden_text.count(), 12)):
+        text = clean_text(await aria_hidden_text.nth(idx).inner_text())
+        if text:
+            text_chunks.append(text)
+
+    headline = text_chunks[1] if len(text_chunks) > 1 else None
+    location = text_chunks[2] if len(text_chunks) > 2 else None
+    current_company = text_chunks[3] if len(text_chunks) > 3 else None
+
+    headline = headline or await _first_text(item.locator('.entity-result__primary-subtitle, .t-14.t-black.t-normal'))
+    location = location or await _first_text(item.locator('.entity-result__secondary-subtitle, .t-14.t-normal.t-black--light'))
+    current_company = current_company or await _first_text(item.locator('.entity-result__summary, .t-14.t-normal'))
+    profile_urn = await _extract_profile_urn(item)
 
     return {
         'full_name': full_name or None,
@@ -76,7 +86,8 @@ async def _extract_from_listitem(item: Locator) -> dict[str, Any] | None:
         'location': location,
         'current_company': current_company,
         'profile_url': profile_url,
-        'profile_urn': await _extract_profile_urn(item),
+        'profile_urn': profile_urn,
+        'public_identifier': extract_public_identifier(profile_url, profile_urn),
     }
 
 
@@ -123,8 +134,23 @@ async def scrape_people_search(
     url = _people_search_url(keywords=keywords, page=page)
     async with browser_context(cookies_json=cookies_json, storage_state_path=storage_state_path) as context:
         page_obj = await context.new_page()
+        api_payloads: list[dict[str, Any]] = []
+
+        async def handle_response(response) -> None:
+            if response.request.resource_type not in {'fetch', 'xhr'}:
+                return
+            if not any(marker in response.url for marker in VOYAGER_RESPONSE_MARKERS):
+                return
+            try:
+                payload = await response.json()
+            except Exception:
+                return
+            api_payloads.extend(extract_people_from_response(payload))
+
+        page_obj.on('response', lambda response: asyncio.create_task(handle_response(response)))
         await goto_with_timeout(page_obj, url)
         await ensure_logged_in(page_obj)
+        await page_obj.wait_for_timeout(2000)
 
         page_title = await page_obj.title()
         logger.info('people_search navigation final_url=%s page_url=%s title=%s', url, page_obj.url, page_title)
@@ -157,20 +183,23 @@ async def scrape_people_search(
             if len(parsed) >= 10:
                 break
 
+        merged_results = merge_people_results(api_payloads, parsed)
+
         logger.info(
-            'people_search listitem_stats total=%s valid_profiles=%s skipped_non_profile=%s skipped_upsell_or_noise=%s',
+            'people_search listitem_stats total=%s dom_profiles=%s api_profiles=%s merged_profiles=%s skipped_non_profile=%s skipped_upsell_or_noise=%s',
             total_listitems,
             len(parsed),
+            len(api_payloads),
+            len(merged_results),
             skipped_non_profile,
             skipped_upsell_or_noise,
         )
 
-        if len(parsed) == 0:
+        if len(merged_results) == 0:
             await _save_debug_artifacts(page_obj, 'no_in_profile_links_found')
             raise SelectorMissingError(
                 f'no valid /in/ profile links found in SearchResultsPeople listitems. '
                 f'total_listitems={total_listitems} url={page_obj.url} title={page_title}'
             )
 
-        # target at least first 5 valid profiles when available
-        return parsed[:10]
+        return merged_results[:10]

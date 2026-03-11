@@ -41,6 +41,8 @@ class SearchResult(Base):
     headline: Mapped[str | None] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(String(255))
     raw_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Keep schema compatible with backend DB models: created_at is NOT NULL in Postgres
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Profile(Base):
